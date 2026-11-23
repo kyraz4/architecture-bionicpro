@@ -1,16 +1,18 @@
 from airflow import DAG
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.decorators import task
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import clickhouse_connect
 import os
 
+# Настройки ClickHouse из переменных окружения (заданы в docker-compose)
 CLICKHOUSE_HOST = os.getenv("CLICKHOUSE_HOST", "clickhouse")
 CLICKHOUSE_PORT = int(os.getenv("CLICKHOUSE_PORT", "8123"))
 CLICKHOUSE_USER = os.getenv("CLICKHOUSE_USER", "default")
 CLICKHOUSE_PASSWORD = os.getenv("CLICKHOUSE_PASSWORD", "")
 CLICKHOUSE_DB = os.getenv("CLICKHOUSE_DB", "reports_mart")
 
+# ID соединений в Airflow (создаются в UI)
 POSTGRES_CRM_CONN = "postgres_crm"
 POSTGRES_TELEMETRY_CONN = "postgres_db"
 
@@ -23,7 +25,7 @@ default_args = {
 with DAG(
     dag_id="report_mart_daily",
     default_args=default_args,
-    schedule="0 2 * * *",
+    schedule="0 2 * * *",  # Каждый день в 02:00
     start_date=datetime(2025, 1, 1),
     catchup=False,
     tags=["reports", "etl"],
@@ -31,6 +33,7 @@ with DAG(
 
     @task
     def create_mart_table():
+        """Создает таблицу витрины в ClickHouse, если её нет."""
         client = clickhouse_connect.get_client(
             host=CLICKHOUSE_HOST,
             port=CLICKHOUSE_PORT,
@@ -56,8 +59,9 @@ with DAG(
         client.close()
 
     @task
-    def extract_and_load(ds=None):
-        # 1. CRM: пользователь → протез
+    def extract_and_load():
+        """Извлекает данные из CRM и Телеметрии, объединяет и грузит в ClickHouse."""
+        # 1. CRM: получаем связку пользователь -> протез
         crm_hook = PostgresHook(postgres_conn_id=POSTGRES_CRM_CONN)
         crm_rows = crm_hook.get_records(
             sql="""
@@ -67,7 +71,7 @@ with DAG(
             """
         )
 
-        # 2. Телеметрия за день ds
+        # 2. Телеметрия: агрегируем данные за последние 24 часа
         telem_hook = PostgresHook(postgres_conn_id=POSTGRES_TELEMETRY_CONN)
         telem_rows = telem_hook.get_records(
             sql="""
@@ -77,24 +81,27 @@ with DAG(
                        AVG(response_ms) AS avg_response_ms,
                        SUM(CASE WHEN error THEN 1 ELSE 0 END) AS error_count
                 FROM telemetry_signals
-                WHERE DATE(created_at) = %(ds)s
+                WHERE created_at >= NOW() - INTERVAL '24 hours'
                 GROUP BY prosthesis_id
-            """,
-            parameters={"ds": ds},
+            """
         )
 
-        # 3. Объединение: user_id + агрегированная телеметрия
+        # 3. Объединение данных в Python (user_id + агрегированная телеметрия)
         telem_map = {r[0]: r[1:] for r in telem_rows}
         rows_to_insert = []
+
+        # В витрину пишем текущую дату
+        today = date.today()
+
         for user_id, prosthesis_id in crm_rows:
             t = telem_map.get(prosthesis_id)
             if t:
                 rows_to_insert.append((
-                    user_id, prosthesis_id, ds,
+                    user_id, prosthesis_id, today,
                     t[0], t[1], t[2] or 0.0, t[3] or 0,
                 ))
 
-        # 4. Загрузка в ClickHouse через прямой клиент
+        # 4. Загрузка в ClickHouse
         if rows_to_insert:
             client = clickhouse_connect.get_client(
                 host=CLICKHOUSE_HOST,
@@ -116,6 +123,8 @@ with DAG(
 
         return f"Inserted {len(rows_to_insert)} rows"
 
+    # Определяем порядок выполнения задач
     create_task = create_mart_table()
     load_task = extract_and_load()
+
     create_task >> load_task
