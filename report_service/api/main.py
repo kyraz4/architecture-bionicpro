@@ -1,13 +1,15 @@
 import os
 from fastapi import FastAPI, HTTPException, Depends, status
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.middleware.cors import CORSMiddleware
 from typing import Annotated, Any
 import jwt
 import clickhouse_connect
+import clickhouse_connect.driver.exceptions
 
 app = FastAPI(title="BionicPRO Reports API")
 
+# --- Настройка CORS ---
 origins = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
@@ -21,17 +23,18 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type"],
 )
 
-# --- ClickHouse ---
-ch_client = clickhouse_connect.get_client(
-    host=os.getenv("CLICKHOUSE_HOST", "localhost"),
-    port=int(os.getenv("CLICKHOUSE_PORT", "8123")),
-    username=os.getenv("CLICKHOUSE_USER", "default"),
-    password=os.getenv("CLICKHOUSE_PASSWORD", ""),
-    database=os.getenv("CLICKHOUSE_DB", "reports_mart"),
-)
+# --- Функция создания клиента ClickHouse ---
+def get_ch_client():
+    return clickhouse_connect.get_client(
+        host=os.getenv("CLICKHOUSE_HOST", "clickhouse"),
+        port=int(os.getenv("CLICKHOUSE_PORT", "8123")),
+        username=os.getenv("CLICKHOUSE_USER", "default"),
+        password=os.getenv("CLICKHOUSE_PASSWORD", ""),
+        database=os.getenv("CLICKHOUSE_DB", "reports_mart"),
+    )
 
 # --- JWT / Keycloak ---
-KEYCLOAK_URL = os.getenv("KEYCLOAK_URL", "http://localhost:8080")
+KEYCLOAK_URL = os.getenv("KEYCLOAK_URL", "http://keycloak:8080")
 KEYCLOAK_REALM = os.getenv("KEYCLOAK_REALM", "reports-realm")
 JWKS_URL = f"{KEYCLOAK_URL}/realms/{KEYCLOAK_REALM}/protocol/openid-connect/certs"
 
@@ -75,8 +78,7 @@ def verify_jwt(
 def get_reports(claims: Annotated[dict[str, Any], Depends(verify_jwt)]):
     """
     Возвращает отчёты ТОЛЬКО для текущего пользователя.
-    user_id берётся из проверенного JWT (claim sub) — это UUID пользователя Keycloak.
-    В витрине ClickHouse поле user_id должно содержать этот же UUID.
+    user_id берётся из проверенного JWT (claim sub).
     """
     user_id = claims.get("sub")
     if not user_id:
@@ -95,17 +97,28 @@ def get_reports(claims: Annotated[dict[str, Any], Depends(verify_jwt)]):
         ORDER BY report_date DESC
         LIMIT 100
     """
+
     try:
-        result = ch_client.query(query, parameters={"user_id": user_id})
-    except Exception as e:
+        client = get_ch_client()
+        result = client.query(query, parameters={"user_id": user_id})
+        client.close()
+
+        columns = ["report_date", "prosthesis_id", "total_signals",
+                   "recognized_moves", "avg_response_ms", "error_count"]
+
+        return {
+            "user_id": user_id,
+            "reports": [dict(zip(columns, row)) for row in result.result_rows]
+        }
+
+    except clickhouse_connect.driver.exceptions.DatabaseError as e:
+        # Перехватываем ошибку отсутствия таблицы (если ETL еще не запускался)
+        if "UNKNOWN_TABLE" in str(e) or "code: 60" in str(e):
+            return {"user_id": user_id, "reports": []}
         raise HTTPException(status_code=500, detail=str(e))
 
-    columns = ["report_date", "prosthesis_id", "total_signals",
-               "recognized_moves", "avg_response_ms", "error_count"]
-    return {
-        "user_id": user_id,
-        "reports": [dict(zip(columns, row)) for row in result.result_rows]
-    }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/health")

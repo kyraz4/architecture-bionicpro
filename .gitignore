@@ -4,3 +4,4 @@
 /crm-data
 /telemetry-data
 2024__yandex-architecture-sso.code-workspace
+report_service/dags/__pycache__/report_mart_dag.cpython-312.pyc

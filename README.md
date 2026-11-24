@@ -18,9 +18,24 @@
 
 Запуск приложения: 
 
+Если compose уже запускался
 ```bash
-docker compose up
+docker compose down
+rm -rf ./postgres-keycloak-data ./crm-data ./telemetry-data ./clickhouse-data ./airflow-data
 ```
+
+```bash
+docker compose up -d --build
+```
+
+проверьте, что все сервисы поднялись
+
+```bash
+docker compose ps
+```
+
+Подождите примерно 1-2 минуты (чтобы Airflow, ClickHouse и Keycloak - точно запустились)
+
 
 PS: при тестрировании приложения иногда наблюдались проблемы с очередью инициализации/запуска контейнеров единой командой (например airflow не дожидался запуска clickhouse и падал с ошибкой). 
 Для более стабильного запуска можно запустить приложения по очереди (можно проверять статус запуска сервисов между шагами с помощью docker ps | grep {your service, например clickhouse}):
