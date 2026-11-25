@@ -7,28 +7,55 @@ const ReportPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
 
   const downloadReport = async () => {
-    if (!keycloak?.token) {
-      setError('Not authenticated');
-      return;
-    }
+      if (!keycloak?.token) {
+        setError('Not authenticated');
+        return;
+      }
 
-    try {
-      setLoading(true);
-      setError(null);
+      try {
+        setLoading(true);
+        setError(null);
 
-      const response = await fetch(`${process.env.REACT_APP_API_URL}/reports`, {
-        headers: {
-          'Authorization': `Bearer ${keycloak.token}`
+        const response = await fetch(`${process.env.REACT_APP_API_URL}/reports`, {
+          headers: {
+            'Authorization': `Bearer ${keycloak.token}`
+          }
+        });
+
+        if (!response.ok) {
+          throw new Error(`Report generation failed: ${response.status}`);
         }
-      });
 
-      
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
-    } finally {
-      setLoading(false);
-    }
-  };
+        // Получаем файл как Blob
+        const blob = await response.blob();
+
+        // Извлекаем имя файла из Content-Disposition (если бэкенд его задаёт)
+        const disposition = response.headers.get('Content-Disposition');
+        let fileName = 'report.csv';
+        if (disposition) {
+          const match = disposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+          if (match) {
+            fileName = decodeURIComponent(match[1].replace(/['"]/g, ''));
+          }
+        }
+
+        // Создаём временную ссылку и триггерим скачивание
+        const blobUrl = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = blobUrl;
+        link.download = fileName;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        window.URL.revokeObjectURL(blobUrl);
+
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'An error occurred');
+      } finally {
+        setLoading(false);
+      }
+    };
+
 
   if (!initialized) {
     return <div>Loading...</div>;
@@ -51,7 +78,7 @@ const ReportPage: React.FC = () => {
     <div className="flex flex-col items-center justify-center min-h-screen bg-gray-100">
       <div className="p-8 bg-white rounded-lg shadow-md">
         <h1 className="text-2xl font-bold mb-6">Usage Reports</h1>
-        
+
         <button
           onClick={downloadReport}
           disabled={loading}
