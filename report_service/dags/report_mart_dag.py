@@ -61,6 +61,8 @@ with DAG(
     @task
     def extract_and_load():
         """Извлекает данные из CRM и Телеметрии, объединяет и грузит в ClickHouse."""
+        from datetime import date
+
         # 1. CRM: получаем связку пользователь -> протез
         crm_hook = PostgresHook(postgres_conn_id=POSTGRES_CRM_CONN)
         crm_rows = crm_hook.get_records(
@@ -71,7 +73,7 @@ with DAG(
             """
         )
 
-        # 2. Телеметрия: агрегируем данные за последние 24 часа
+        # 2. Телеметрия: агрегируем данные за последние 24 часа (вместо привязки к ds)
         telem_hook = PostgresHook(postgres_conn_id=POSTGRES_TELEMETRY_CONN)
         telem_rows = telem_hook.get_records(
             sql="""
@@ -86,11 +88,11 @@ with DAG(
             """
         )
 
-        # 3. Объединение данных в Python (user_id + агрегированная телеметрия)
+        # 3. Объединение данных в Python
         telem_map = {r[0]: r[1:] for r in telem_rows}
         rows_to_insert = []
 
-        # В витрину пишем текущую дату
+        # В витрину пишем сегодняшнюю дату
         today = date.today()
 
         for user_id, prosthesis_id in crm_rows:

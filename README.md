@@ -20,7 +20,7 @@
 
 Если compose уже запускался
 ```bash
-docker compose down
+docker compose down -v
 rm -rf ./postgres-keycloak-data ./crm-data ./telemetry-data ./clickhouse-data ./airflow-data
 ```
 
